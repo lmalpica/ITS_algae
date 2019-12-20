@@ -1,0 +1,204 @@
+---
+title: "Native Vs Invasive Algae"
+author: "Luis Malpica"
+date: "Dec, 2019"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = FALSE)
+#code_folding: hide
+```
+
+```{r Libraries & data, include=F, cache=FALSE, message=F}
+rm(list = ls())
+
+#load
+#library(plyr)
+library(tidyr)
+library(reshape2)
+library(dplyr)
+library(ggplot2)
+library(zoo)
+library(MASS)
+#library(Rmisc)
+
+#A custom theme for ggplot####
+theme_gg <- function(base_size = 11, base_family = "") {
+  theme_light() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      strip.background = element_rect(fill = NA, colour = NA),
+      strip.text.x = element_text(colour = "grey10"),
+      axis.text = element_text(colour = "grey20",size=14),
+      axis.title = element_text(colour = "grey20",size=18),
+      legend.title = element_text(colour = "grey20", size = rel(1.2)),
+      panel.border = element_rect(fill = NA, colour = "grey70", size = 1),
+      legend.key.size = unit(0.8, "lines"),
+      legend.text = element_text(size = rel(1), colour = "grey20"),
+      legend.key = element_rect(colour = NA)
+    )
+}
+```
+
+```{r Data manipulation, include=T}
+#Read and manipulate data####
+d <- read.table("data/Abundancia_P_final_B_C.csv",sep=",", header=T)
+
+#Change Sargassum_spp to Sargassum_horneri
+d$Genusspecies <- recode(d$Genusspecies, Sargassum_spp = "Sargassum_horneri")
+
+#Estimate total Abund per transect (sum)
+d_algae_abund <- summarise(group_by(d,Year, Transect_number, Genusspecies),
+                             AbundTot = (sum(Abund)))
+d_algae_densm2 <- summarise(group_by(d,Year, Transect_number, Genusspecies),
+                             Densm2 = (sum(Abund))/60)
+d_algae <- merge(d_algae_abund, d_algae_densm2)
+
+d_algae_mean <- merge(summarise(group_by(d_algae_densm2,Year, Genusspecies),
+                             MeanDensm2 = (mean(Densm2))),
+                      summarise(group_by(d_algae_densm2,Year, Genusspecies),
+                             SdDensm2 = (sd(Densm2))))
+d_algae_mean <- mutate(d_algae_mean, SEDensm2 = SdDensm2/(sqrt(3)))
+
+```
+
+
+```{r Algae plots, include=T,cache=FALSE, message=F}
+#Dens by transect by year
+ggplot(data=d_algae, aes(x=as.factor(Year), y=Densm2, group = 1)) +
+#    geom_line() + facet_wrap(c("Genusspecies")) +
+    geom_point() + facet_wrap(c("Genusspecies")) +
+    geom_pointrange((aes(ymin=(Densm2), ymax=(Densm2)))) +
+  xlab('Year') +
+  labs(y=expression(Mean~ density~ (~ ha^-1))) +
+  theme_gg()
+#ggsave("figs/Algae_Surveys.pdf", width = 10, height = 6, useDingbats=FALSE)
+
+#Mean dens by year
+ggplot(data=d_algae_mean, aes(x=as.factor(Year), y=MeanDensm2, group = 1)) +
+    geom_line() + facet_wrap(c("Genusspecies")) +
+    geom_point() + facet_wrap(c("Genusspecies")) +
+    geom_pointrange((aes(ymin=(MeanDensm2-SEDensm2), ymax=(MeanDensm2+SEDensm2)))) +
+  xlab('Year') +
+  labs(y=expression(Mean~ density~ (~ m^2))) +
+  theme_gg()
+ggsave("figs/Algae_Surveys.pdf", width = 10, height = 6, useDingbats=FALSE)
+
+```
+
+```{r lm to explore algae variability over time}
+
+library(lme4)
+library(tidyverse)
+#library(lmerTest)
+#library(arm)
+#library(coefplot)
+library(sjPlot)
+library(sjmisc)
+library(rstanarm)
+library(visreg)
+library(pscl)
+
+#Make Year a factor & add logged dens value
+d_algae$Year <- as.factor(d_algae$Year)
+d_algae <- dplyr::mutate(d_algae, Densm2b = log(1+(Densm2)))
+
+str(d_algae)
+
+#####Start of lmm####
+ggplot(d_algae, aes(Year, Densm2, colour = Genusspecies)) +
+  geom_point() +
+  geom_smooth(method = "lm") + 
+  facet_wrap(~Genusspecies)
+
+#Split data into three algae spp
+d_Mp <- dplyr::filter(d_algae, Genusspecies == "Macrocystis_pyrifera_stipes")
+d_Up <- dplyr::filter(d_algae, Genusspecies == "Undaria_pinnatifida")
+d_Sh <- dplyr::filter(d_algae, Genusspecies == "Sargassum_horneri")
+
+#Run models for Mp
+m_Mp <- lm(Densm2b ~ Year, data = d_Mp)
+summary(m_Mp)
+visreg(m_Mp)
+plot(m_Mp)
+
+lm_Mp <- glm(Densm2 ~ Year, family=gaussian(link="log"), data = d_Mp)
+summary(lm_Mp)
+
+lm_Mp <- glm(AbundTot ~ Year, family=poisson, data = d_Mp)
+
+lm_Mp <- zeroinfl(AbundTot ~ Year, data = d_Mp)
+
+#Run models for Sh####
+m_Sh <- lm(Densm2 ~ Year, data = d_Sh)
+summary(m_Sh)
+visreg(m_Sh)
+plot(m_Sh)
+
+lm_Sh <- glm(Densm2 ~ Year, family=gaussian(link="log"), data = d_Sh)
+summary(lm_Sh)
+plot(lm_Sh)
+
+lm_Sh <- zeroinfl(AbundTot ~ Year, data = d_Sh)
+
+
+#Run models for Up####
+m_Up <- lm(Densm2 ~ Year, data = d_Up)
+summary(m_Up)
+visreg(m_Up)
+plot(m_Up)
+
+arm::display(m_lmer)
+#Model visualizations
+sjp.setTheme(base = theme_classic(), 
+             legend.title.face = "italic", # title font face
+             legend.inside = F,         # legend inside plot
+             legend.color = "grey50",      # legend label color
+             legend.pos = "bottom right",  # legend position inside plot
+             axis.title.size = 1,
+             axis.textsize = 1,
+             legend.size = 1,
+             legend.title.size = 1,
+             geom.label.size = 3)
+
+sjp.lmer(m_lmer, type = "fe")
+ggsave("figs/LFDensMod_fe.pdf", width = 6, height = 4, useDingbats=FALSE)
+
+sjp.lmer(m_lmer, type = "re")
+ggsave("figs/LFDensMod_re.pdf", width = 6, height = 4, useDingbats=FALSE)
+
+jtools::effect_plot(m_Mp)
+
+p <- jtools::effect_plot(m_Mp, pred = Year, interval = TRUE, plot.points = TRUE, point.size = .8, jitter = 0.1,
+                    x.label = "Time (Years)", y.label = "Lionfish density (ha-1)", 
+                    axis.text = element_text(colour = "grey20",size=14),
+                    axis.title = element_text(colour = "grey20",size=18))
+print(p)
+ggsave("figs/LF_DensCoz.pdf", width = 10, height = 6, useDingbats=FALSE)
+
+#Coefficients table 
+#sjt.lmer(m_lmer)
+sjt.lmer(m_lmer, show.header = TRUE, string.est = "Estimate", 
+         string.ci = "Conf. Int.", string.p = "p-value",
+         string.dv = "Response", string.pred = "Coefficients",
+         string.interc = "(It)", file = "figs/LF_DensModTbl.doc")ntercep
+#To estimate % of reduction based on main effect from time 
+(((exp(-.9))-1)*100)-1 #main effect = -0.90 this equals ~ -60 % lionfish reduction per yr
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
